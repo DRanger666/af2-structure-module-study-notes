@@ -1,0 +1,211 @@
+\documentclass[12pt, a4paper]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{graphicx}
+\usepackage{longtable}
+\usepackage{xcolor}
+\usepackage{hyperref}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue,
+  filecolor=magenta,
+  urlcolor=cyan,
+}
+
+\title{Expansion on Algorithm 20: Dropout, LayerNorm, and Transition MLP}
+\author{Study Notes}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\section{Context}
+
+We focus on lines~6--9 of Algorithm~20 (the structure module loop) in the AF2 supplement, and in particular on items labeled 4.b and 4.c in a paraphrased description. From the supplement:
+\begin{quote}
+6: $\{s_i\} \mathrel{+}= \operatorname{InvariantPointAttention}(\{s_i\}, \{z_{ij}\}, \{T_i\})$ \\
+7: $s_i \leftarrow \operatorname{LayerNorm}(\operatorname{Dropout}_{0.1}(s_i))$ \\
+8: $s_i \leftarrow s_i + \operatorname{Linear}(\operatorname{ReLU}(\operatorname{Linear}(\operatorname{ReLU}(\operatorname{Linear}(s_i)))))$ \\
+9: $s_i \leftarrow \operatorname{LayerNorm}(\operatorname{Dropout}_{0.1}(s_i))$.
+\end{quote}
+
+The mapping to the paraphrased bullets is:
+\begin{itemize}
+  \item 4.a: IPA step (line~6),
+  \item 4.b: ``Apply LayerNorm and dropout'' (line~7),
+  \item 4.c: ``Apply a 3-layer ReLU MLP (Transition) with residual connection'' (lines~8 and~9).
+\end{itemize}
+
+We now unpack 4.b and 4.c carefully.
+
+\section{Step 4.b: $s_i \leftarrow \operatorname{LayerNorm}(\operatorname{Dropout}_{0.1}(s_i))$}
+
+\subsection{Literal Operation}
+
+After the IPA update,
+\[
+  s_i \leftarrow s_i + \operatorname{IPA}_i(s, z, T),
+\]
+each residue's single embedding $s_i \in \mathbb{R}^{c_s}$ is transformed as follows.
+
+\paragraph{1. Dropout with rate $0.1$.}
+
+Each channel of $s_i$ is independently either:
+\begin{itemize}
+  \item set to zero with probability $0.1$, or
+  \item kept and scaled by $1/(1-0.1) = 1/0.9$ with probability $0.9$.
+\end{itemize}
+
+If $m_i \in \{0, 1/(1-p)\}^{c_s}$ is a random mask (with $p = 0.1$), dropout yields
+\[
+  \tilde{s}_i = \operatorname{Dropout}_{0.1}(s_i) = m_i \odot s_i.
+\]
+
+\paragraph{2. Layer normalization.}
+
+LayerNorm is applied across the channel dimension independently for each residue. Define
+\[
+  \mu_i = \frac{1}{c_s} \sum_{k=1}^{c_s} \tilde{s}_{i,k},
+  \qquad
+  \sigma_i^2
+    = \frac{1}{c_s} \sum_{k=1}^{c_s} (\tilde{s}_{i,k} - \mu_i)^2.
+\]
+LayerNorm produces
+\[
+  \operatorname{LayerNorm}(\tilde{s}_i)_k
+  = \gamma_k \frac{\tilde{s}_{i,k} - \mu_i}{\sqrt{\sigma_i^2 + \varepsilon}} + \beta_k,
+\]
+with learnable scale $\gamma_k$ and bias $\beta_k$ per channel.
+
+Thus line~7 is exactly
+\[
+  s_i \leftarrow \operatorname{LayerNorm}(\operatorname{Dropout}_{0.1}(s_i)).
+\]
+
+\subsection{Conceptual Rationale}
+
+\begin{itemize}
+  \item \textbf{Dropout} injects noise into the representation. After IPA, some channels of $s_i$ are randomly zeroed, so subsequent updates cannot depend too heavily on any single component. The supplement explicitly states that dropout is applied to the outputs of IPA and the Transition layer.
+  \item \textbf{LayerNorm} stabilizes per-residue activations. It keeps the mean and variance of $s_i$ under control, making learning easier and reducing the risk of exploding or vanishing activations as we iterate the structure block.
+  \item The combination ``Dropout then LayerNorm'' means the normalized activations already incorporate the effect of dropout noise; the Transition MLP therefore sees a noisy but rescaled vector with controlled variance.
+\end{itemize}
+
+Intuitively, line~7 performs:
+\begin{quote}
+Take the per-residue features after IPA, inject some noise via dropout, then rescale them to a standard form before feeding them into the small MLP.
+\end{quote}
+
+\section{Step 4.c: Transition --- 3-Layer ReLU MLP with Residual}
+
+Lines~8 and~9 implement the Transition for the structure module's single representation.
+
+\subsection{Code Structure}
+
+Line~8:
+\[
+  s_i \leftarrow s_i + \operatorname{Linear}(\operatorname{ReLU}(\operatorname{Linear}(\operatorname{ReLU}(\operatorname{Linear}(s_i))))),
+\]
+line~9:
+\[
+  s_i \leftarrow \operatorname{LayerNorm}(\operatorname{Dropout}_{0.1}(s_i)).
+\]
+
+It is easiest to rewrite line~8 in explicit mathematical steps. Let the input to this block be the normalized vector from line~7, and denote it by $x_i$:
+\[
+  x_i = s_i \quad \text{(after line 7)}.
+\]
+
+\paragraph{1. First linear layer.}
+\[
+  h_i^{(1)} = W^{(1)} x_i + b^{(1)},
+  \qquad h_i^{(1)} \in \mathbb{R}^{c_s}.
+\]
+
+\paragraph{2. First ReLU.}
+\[
+  r_i^{(1)} = \operatorname{ReLU}(h_i^{(1)}).
+\]
+
+\paragraph{3. Second linear layer.}
+\[
+  h_i^{(2)} = W^{(2)} r_i^{(1)} + b^{(2)},
+  \qquad h_i^{(2)} \in \mathbb{R}^{c_s}.
+\]
+
+\paragraph{4. Second ReLU.}
+\[
+  r_i^{(2)} = \operatorname{ReLU}(h_i^{(2)}).
+\]
+
+\paragraph{5. Third linear layer.}
+\[
+  h_i^{(3)} = W^{(3)} r_i^{(2)} + b^{(3)},
+  \qquad h_i^{(3)} \in \mathbb{R}^{c_s}.
+\]
+
+\paragraph{6. Residual addition.}
+\[
+  s_i \leftarrow x_i + h_i^{(3)}.
+\]
+
+This stack
+\[
+  x_i \mapsto x_i + W^{(3)}
+    \operatorname{ReLU}\bigl(
+      W^{(2)} \operatorname{ReLU}(W^{(1)} x_i + b^{(1)}) + b^{(2)}
+    \bigr) + b^{(3)}
+\]
+is exactly what line~8 encodes.
+
+Two details from the algorithm text are important:
+\begin{itemize}
+  \item They note ``all intermediate activations $\in \mathbb{R}^{c_s}$'', which tells us they do \emph{not} expand the hidden dimension here; each layer remains of size $c_s$.
+  \item They name this block the \emph{Transition} for the structure module, analogous to the MSA Transition in the Evoformer, which is also a small MLP with a residual connection.
+\end{itemize}
+
+Line~9 then applies dropout and LayerNorm once more:
+\[
+  s_i \leftarrow \operatorname{LayerNorm}(\operatorname{Dropout}_{0.1}(s_i)).
+\]
+
+Thus the full 4.c block is:
+\begin{enumerate}
+  \item Apply a residual 3-layer ReLU MLP to the normalized IPA output,
+  \item Apply dropout and LayerNorm to the result.
+\end{enumerate}
+
+\subsection{Why This Pattern?}
+
+Conceptually this mirrors a Transformer block:
+\begin{itemize}
+  \item attention-like update (IPA) plus residual,
+  \item normalization + MLP + residual,
+  \item another normalization.
+\end{itemize}
+
+The difference is that here LayerNorm and dropout appear on both sides of the MLP:
+\begin{enumerate}
+  \item Normalize the IPA output,
+  \item Use that stable input for the Transition MLP,
+  \item Add the MLP output back to the normalized input (residual),
+  \item Normalize again, with dropout, to keep the statistics of $s_i$ well behaved for the next structure block iteration.
+\end{enumerate}
+
+Mathematically, the Transition MLP provides \emph{non-geometric flexibility} at the per-residue feature level:
+\begin{itemize}
+  \item IPA is heavily constrained by geometry and equivariance,
+  \item The Transition allows each residue to apply a learned nonlinear transformation to its feature vector, mixing channels arbitrarily without affecting coordinates,
+  \item The residual connection means the MLP only needs to learn a correction to the identity map rather than a completely new mapping, improving optimization.
+\end{itemize}
+
+In summary, steps 4.b and 4.c together:
+\begin{quote}
+Take the feature update from IPA, regularize and normalize it, pass it through a small per-residue MLP with a residual connection, and normalize again so that the updated feature vector is numerically stable before predicting the next frame update.
+\end{quote}
+
+\end{document}
+

@@ -1,0 +1,635 @@
+\documentclass[12pt, a4paper]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{graphicx}
+\usepackage{longtable}
+\usepackage{xcolor}
+\usepackage{hyperref}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue,
+  filecolor=magenta,
+  urlcolor=cyan,
+}
+
+\title{AF2 Structure Module and IPA:\\A Self-Contained Walkthrough}
+\author{Study Notes}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\section*{Prompt (Context)}
+
+The goal of this note is to provide a self-contained, didactic explanation of the AlphaFold~2 structure module, in particular the invariant point attention (IPA) mechanism. The requirements are:
+\begin{itemize}
+  \item Target the structure module and explain all relevant pieces (frames, IPA, BackboneUpdate, FAPE, torsions, etc.).
+  \item For each algorithm line, explain what it does at a high level, what each term means, and the mathematical basis.
+  \item When introducing a mathematical concept, explain it in plain English and from basic linear algebra/Transformer knowledge.
+  \item Treat this as self-contained learning material, not just a brief summary.
+\end{itemize}
+
+\section{What the Structure Module Does}
+
+By the time the structure module begins, the Evoformer trunk has produced two main tensors:
+\begin{itemize}
+  \item A \emph{single representation} $s_i^{\text{initial}} \in \mathbb{R}^{c_s}$ for each residue $i$,
+  \item A \emph{pair representation} $z_{ij} \in \mathbb{R}^{c_z}$ for each residue pair $(i,j)$.
+\end{itemize}
+
+The structure module turns these into:
+\begin{itemize}
+  \item a rigid frame $(R_i, t_i)$ for each residue's backbone (one rotation matrix and one translation vector per residue),
+  \item side-chain and backbone torsion angles,
+  \item final 3D coordinates of all atoms $\tilde{x}_i^a$.
+\end{itemize}
+
+Algorithm~20 (structure module) can be summarized as:
+\begin{enumerate}
+  \item Normalize and project the input features.
+  \item Initialize each residue's frame to identity rotation at the origin.
+  \item Run $8$ identical structure blocks (sharing parameters). Each block:
+  \begin{enumerate}
+    \item Updates the single representation with IPA,
+    \item Applies a feedforward Transition MLP on the single representation,
+    \item Predicts a small frame update (quaternion + translation) per residue and composes it into each backbone frame,
+    \item Predicts torsion angles and applies auxiliary losses (per-iteration FAPE and torsion losses).
+  \end{enumerate}
+  \item Finally, convert the final frames and torsion angles into rigid-group frames and then coordinates for all atoms, and apply the final FAPE and confidence losses.
+\end{enumerate}
+
+Everything geometric in the structure module is expressed through \emph{rigid frames} and \emph{points expressed in frames}. IPA is how residues ``look at each other'' using these frames in a geometry-respecting way.
+
+\section{Frames and Rigid-Body Transformations}
+
+\subsection{Rigid Motions and $\mathrm{SE}(3)$}
+
+A rigid motion in 3D is a rotation followed by a translation. Mathematically:
+\begin{itemize}
+  \item A rotation $R \in \mathbb{R}^{3 \times 3}$ is an orthogonal matrix with $\det R = 1$ and $R^\top R = I$,
+  \item A translation $t \in \mathbb{R}^3$ is a vector.
+\end{itemize}
+
+The rigid transform $T = (R,t)$ acts on a point $x \in \mathbb{R}^3$ by
+\[
+  T \circ x = R x + t.
+\]
+
+Composition of rigid transforms is
+\[
+  (R_2, t_2) \circ (R_1, t_1)
+  = (R_2 R_1, R_2 t_1 + t_2).
+\]
+
+The set of all such transforms, with this composition, is the Lie group $\mathrm{SE}(3)$.
+
+AlphaFold uses exactly this representation: a \emph{frame} for residue $i$ is
+\[
+  T_i = (R_i, t_i).
+\]
+
+\subsection{Local vs.\ Global Coordinates}
+
+Think of each residue's frame as a small coordinate system attached to that residue.
+\begin{itemize}
+  \item A point in global coordinates is $x \in \mathbb{R}^3$,
+  \item The local coordinates of the same point in frame $T_i=(R_i,t_i)$ are
+  \[
+    T_i^{-1} \circ x = R_i^{-1}(x - t_i).
+  \]
+\end{itemize}
+
+Thus:
+\begin{itemize}
+  \item Local $\to$ global: $x_{\text{global}} = T_i \circ x_{\text{local}}$,
+  \item Global $\to$ local: $x_{\text{local}} = T_i^{-1} \circ x_{\text{global}}$.
+\end{itemize}
+
+The FAPE loss and IPA both rely on constantly mapping points between local and global frames.
+
+\section{Constructing Frames from Coordinates}
+
+During training, we have ground-truth atom positions from the PDB. For each residue, we need a canonical backbone frame so that:
+\begin{itemize}
+  \item The origin is at C$\alpha$,
+  \item Axes are aligned with the backbone geometry in a consistent, right-handed way.
+\end{itemize}
+
+\subsection{Algorithm 21: \texttt{rigidFrom3Points}}
+
+A small routine \texttt{rigidFrom3Points}(x1, x2, x3) takes three 3D points and returns a frame $(R,t)$ with:
+\begin{enumerate}
+  \item $v_1 = x_3 - x_2$,
+  \item $v_2 = x_1 - x_2$,
+  \item $e_1 = v_1 /\|v_1\|$,
+  \item $u_2 = v_2 - e_1 (e_1^\top v_2)$,
+  \item $e_2 = u_2 / \|u_2\|$,
+  \item $e_3 = e_1 \times e_2$,
+  \item $R = \operatorname{concat}(e_1, e_2, e_3)$ as columns,
+  \item $t = x_2$,
+  \item Return $(R,t)$.
+\end{enumerate}
+
+This is Gram--Schmidt orthogonalization: from two non-collinear vectors with a common origin it builds an orthonormal basis. For backbone frames they choose
+\[
+  x_1 = N,\quad x_2 = \text{C}_\alpha,\quad x_3 = C,
+\]
+so the backbone frame has origin at C$\alpha$.
+
+\subsection{Reflections and Chirality}
+
+Because $e_3$ comes from the cross product $e_1 \times e_2$, the frame behaves like a pseudo-vector frame under reflection. If we reflect all coordinates through the origin ($x \mapsto -x$), the frame does not simply become $(R,-t)$; the rotation part also picks up a reflection matrix. This is why FAPE and IPA can distinguish chiral pairs.
+
+\section{Structure Module Loop (Algorithm 20)}
+
+Here is the core of Algorithm~20, paraphrased.
+\begin{enumerate}
+  \item Normalize the initial single representation $s_i^{\text{initial}}$ and pair representation $z_{ij}$.
+  \item Project $s_i^{\text{initial}}$ into the working single representation $s_i$.
+  \item Initialize all frames $T_i = (I, 0)$.
+  \item For $l = 1$ to $N_{\text{layer}} = 8$:
+  \begin{enumerate}
+    \item Update the single representation with IPA:
+    \[
+      \{s_i\} \mathrel{+}= \operatorname{InvariantPointAttention}(\{s_i\}, \{z_{ij}\}, \{T_i\}).
+    \]
+    \item Apply LayerNorm and dropout.
+    \item Apply a 3-layer ReLU MLP (Transition) with residual connection.
+    \item Update backbone frames:
+    \[
+      T_i \leftarrow T_i \circ \operatorname{BackboneUpdate}(s_i).
+    \]
+    \item Predict torsion angles and apply auxiliary per-layer losses:
+    \begin{itemize}
+      \item Compute C$\alpha$ positions from translations $t_i$,
+      \item Compute a backbone-only FAPE loss between current backbone frames and ground truth,
+      \item Compute a torsion-angle loss.
+    \end{itemize}
+    \item If $l < N_{\text{layer}}$, stop gradients through rotations $R_i$ (but not translations) for stability.
+  \end{enumerate}
+  \item After the loop, average per-layer auxiliary losses, compute rigid-group frames and coordinates for all atoms via \texttt{computeAllAtomCoordinates}, handle symmetric atom renaming, and compute final FAPE and confidence terms.
+\end{enumerate}
+
+Each iteration thus has a two-stage update:
+\begin{itemize}
+  \item IPA: updates hidden features $s_i$ using geometry but does not move frames,
+  \item BackboneUpdate: uses the updated $s_i$ to move the frames themselves.
+\end{itemize}
+
+This is the ``two-stage'' update described in the main paper: first invariant feature updates via IPA, then an equivariant frame update.
+
+\section{Background: Standard Self-Attention}
+
+In standard Transformer self-attention, for each position $i$ and head $h$:
+\begin{itemize}
+  \item Query: $q_i^h = W_q^h s_i$,
+  \item Key: $k_j^h = W_k^h s_j$,
+  \item Value: $v_j^h = W_v^h s_j$.
+\end{itemize}
+
+Attention logits (before softmax) are
+\[
+  \ell_{ij}^h
+  = \frac{1}{\sqrt{c}} (q_i^h)^\top k_j^h,
+\]
+and weights are
+\[
+  a_{ij}^h = \operatorname{softmax}_j(\ell_{ij}^h).
+\]
+
+The output for residue $i$ and head $h$ is
+\[
+  o_i^h = \sum_j a_{ij}^h v_j^h.
+\]
+
+This interaction is purely in feature space; it has no explicit notion of 3D space.
+
+\section{Invariant Point Attention: Intuition}
+
+IPA preserves the basic self-attention structure but augments it with:
+\begin{itemize}
+  \item biases from the pair representation $z_{ij}$,
+  \item point-based 3D distances defined using frames $T_i$.
+\end{itemize}
+
+Key ideas:
+\begin{itemize}
+  \item For each residue $i$ and head $h$, the network predicts several 3D query points in $i$'s local frame,
+  \item It also predicts key points and value points per residue and head,
+  \item Using current frames $T_i$, it maps these points to global 3D, measures squared distances between query and key points, and uses those distances in the attention logits,
+  \item Large distances give negative contributions to logits, so residues far apart in 3D get low attention regardless of feature similarity,
+  \item The construction is invariant to a global rigid motion of all frames.
+\end{itemize}
+
+Intuitively, each head carries a small constellation of points per residue. Residue $i$ prefers to attend to residues $j$ whose constellations lie near its own when viewed in global 3D. At the same time, IPA still uses standard dot-product attention and pair bias, mixing:
+\begin{enumerate}
+  \item feature similarity between residues $i$ and $j$,
+  \item pair information $z_{ij}$,
+  \item geometric proximity of learned points.
+\end{enumerate}
+
+\section{IPA: Algorithm 22 Line-by-Line}
+
+We follow Algorithm~22 and explain each object. Defaults: $N_{\text{head}} = 12$, $c = 16$, $N_{\text{query points}} = 4$, $N_{\text{point values}} = 8$.
+
+\subsection{Project Single Representations to Queries, Keys, Values}
+
+Line~1:
+\begin{quote}
+Use a linear map (no bias) on $s_i$ to produce three vectors per head: $q_i^h, k_i^h, v_i^h \in \mathbb{R}^c$.
+\end{quote}
+
+For each residue $i$:
+\begin{itemize}
+  \item apply a learned linear layer to $s_i$ producing $3 \times N_{\text{head}} \times c$ numbers,
+  \item split them into $q_i^h, k_i^h, v_i^h$ for each head $h$.
+\end{itemize}
+
+This is exactly standard attention with specific head and channel sizes.
+
+\subsection{Predict Query and Key Points in Local Frames}
+
+Line~2:
+\begin{quote}
+Apply another linear map (no bias) to $s_i$ to produce 3D vectors $\tilde{q}_i^{hp}$ and $\tilde{k}_i^{hp}$ for each head $h$ and point index $p = 1,\dots,N_{\text{query points}}$.
+\end{quote}
+
+These satisfy:
+\begin{itemize}
+  \item $\tilde{q}_i^{hp} \in \mathbb{R}^3$: $p$-th query point for residue $i$ and head $h$, in local coordinates of $i$,
+  \item $\tilde{k}_i^{hp} \in \mathbb{R}^3$: $p$-th key point for residue $i$ and head $h$, also in local coordinates.
+\end{itemize}
+
+Each head uses four local points per residue as geometric anchors encoding expected neighbor positions.
+
+\subsection{Predict Value Points}
+
+Line~3:
+\begin{quote}
+Apply another linear map to $s_i$ to produce 3D value points $\tilde{v}_i^{hp}$ for each head $h$ and point index $p = 1,\dots,N_{\text{point values}}$.
+\end{quote}
+
+These are again in local coordinates. They will be:
+\begin{itemize}
+  \item moved to global space,
+  \item averaged across attended residues,
+  \item mapped back to local coordinates,
+\end{itemize}
+yielding updated local points that are invariant/equivariant in the correct way.
+
+\subsection{Pair Bias from Pair Representation}
+
+Line~4:
+\begin{quote}
+Compute a bias $b_{ij}^h$ from the pair representation $z_{ij}$ using a linear layer with no bias.
+\end{quote}
+
+For each head $h$ and pair $(i,j)$ we obtain a scalar bias. This is analogous to the pair bias used throughout the Evoformer, allowing pair information to modulate attention.
+
+\subsection{Weight Factors $w_C$ and $w_L$}
+
+Lines~5--6:
+\begin{quote}
+Define $w_C = \sqrt{2/(9 N_{\text{query points}})}$ and $w_L = \sqrt{1/3}$.
+\end{quote}
+
+These constants are shared across heads. The supplement chooses them by assuming all query/key components are unit Gaussians and computing variances of different contributions to the logits, aiming for:
+\begin{itemize}
+  \item comparable scales for the dot-product term, pair-bias term, and point-distance term,
+  \item overall logit variance of order 1.
+\end{itemize}
+
+\subsection{Logits with Geometry}
+
+Line~7:
+\[
+  a_{ij}^h
+  = \operatorname{softmax}_j\Bigl(
+      w_L \bigl[
+        \sqrt{1/c} (q_i^h)^\top k_j^h
+        + b_{ij}^h
+        - \gamma_h w_C^2 \sum_p
+            \|T_i \circ \tilde{q}_i^{hp}
+             - T_j \circ \tilde{k}_j^{hp}\|^2
+      \bigr]
+    \Bigr).
+\]
+
+Interpretation:
+\begin{itemize}
+  \item The first term is standard scaled dot-product attention,
+  \item $b_{ij}^h$ is a learned pair bias,
+  \item The last term is a geometric penalty: if learned point constellations for $i$ and $j$ are far apart in 3D, the penalty is large and the logit is reduced.
+\end{itemize}
+
+Thus the score combines feature similarity, pair information, and 3D proximity in a way that remains invariant to global rigid motions.
+
+\subsection{Outputs Per Head}
+
+Once we have $a_{ij}^h$:
+\begin{enumerate}
+  \item \textbf{Pair-weighted pair representation} (line~8):
+  \[
+    \tilde{o}_i^h = \sum_j a_{ij}^h z_{ij}.
+  \]
+  \item \textbf{Standard value aggregation} (line~9):
+  \[
+    o_i^h = \sum_j a_{ij}^h v_j^h.
+  \]
+  \item \textbf{Point aggregation in 3D and mapping back to local} (line~10):
+  \[
+    \tilde{o}_i^{hp}
+    = T_i^{-1} \circ
+      \Bigl(
+        \sum_j a_{ij}^h (T_j \circ \tilde{v}_j^{hp})
+      \Bigr).
+  \]
+  This:
+  \begin{itemize}
+    \item maps value points from local to global via $T_j$,
+    \item averages them in global space using attention weights,
+    \item maps the result back to residue $i$'s local frame with $T_i^{-1}$.
+  \end{itemize}
+\end{enumerate}
+
+Algorithm~22 then concatenates $\tilde{o}_i^h$, $o_i^h$, $\tilde{o}_i^{hp}$, and their norms, and applies a linear layer to obtain $\tilde{s}_i$, which is added to $s_i$ as a residual update.
+
+\section{Invariance vs.\ Equivariance in the Structure Module}
+
+We clarify two key notions:
+\begin{itemize}
+  \item Invariance: transforming the input does not change the output,
+  \item Equivariance: transforming the input transforms the output in a predictable way.
+\end{itemize}
+
+In the structure module:
+\begin{itemize}
+  \item IPA is (approximately) invariant to global $\mathrm{SE}(3)$ transformations: if we apply a global rigid motion to all frames $T_i$ and leave $s_i$ unchanged, then
+  \begin{itemize}
+    \item logits and weights $a_{ij}^h$ are unchanged,
+    \item outputs $\tilde{o}_i^{hp}$, $\tilde{o}_i^h$, $o_i^h$ in local coordinates are unchanged.
+  \end{itemize}
+  \item BackboneUpdate is $\mathrm{SE}(3)$-equivariant: if we globally transform all frames initially, the final frames are transformed by the same global transform.
+\end{itemize}
+
+Thus ``IPA + BackboneUpdate'' yields an overall block that is $\mathrm{SE}(3)$-equivariant: invariant feature updates followed by an equivariant frame update.
+
+\section{BackboneUpdate: How Frames Move}
+
+Algorithm~23 (Backbone update) in the supplement predicts a quaternion and a translation per residue from $s_i$. The first quaternion component is fixed to $1$, ensuring valid rotations and biasing updates toward small rotations.
+
+Paraphrased behavior:
+\begin{enumerate}
+  \item From $s_i$, apply a linear layer to get scalars $(b_i, c_i, d_i)$ and a translation vector $\tilde{t}_i \in \mathbb{R}^3$,
+  \item Build the non-unit quaternion $(1, b_i, c_i, d_i)$,
+  \item Normalize it to unit length:
+  \[
+    q_i = \frac{(1, b_i, c_i, d_i)}{\|(1, b_i, c_i, d_i)\|},
+  \]
+  \item Convert $q_i$ to a rotation matrix $\Delta R_i$ using the standard quaternion-to-matrix formula,
+  \item Define $\Delta T_i = (\Delta R_i, \tilde{t}_i)$,
+  \item Update the frame via composition:
+  \[
+    T_i \leftarrow T_i \circ \Delta T_i.
+  \]
+\end{enumerate}
+
+Because the identity rotation corresponds to quaternion $(1,0,0,0)$, small $(b_i,c_i,d_i)$ produce quaternions close to identity, so early updates are small rotations. Since the update is expressed in each residue's current local frame, and composition with a global transform preserves relationships, this rule is equivariant under global rigid motions.
+
+\section{FAPE: Frame Aligned Point Error}
+
+IPA and BackboneUpdate operate on frames and points; FAPE is the loss that measures geometric error in a frame-consistent way. It is defined in Section~1.9.2 and Algorithm~28.
+
+Given:
+\begin{itemize}
+  \item predicted frames $\{T_i\}$ for each rigid group,
+  \item predicted atom positions $\{\tilde{x}_j\}$,
+  \item ground-truth frames $\{T_i^{\text{true}}\}$,
+  \item ground-truth atom positions $\{\tilde{x}_j^{\text{true}}\}$,
+\end{itemize}
+Algorithm~28 computes:
+\begin{enumerate}
+  \item Predicted atom $j$ in local coordinates of frame $i$:
+  \[
+    x_{ij} = T_i^{-1} \circ \tilde{x}_j.
+  \]
+  \item True atom $j$ in local coordinates of true frame $i$:
+  \[
+    x_{ij}^{\text{true}}
+      = (T_i^{\text{true}})^{-1} \circ \tilde{x}_j^{\text{true}}.
+  \]
+  \item Distance per frame and atom:
+  \[
+    d_{ij}
+    = \sqrt{\|x_{ij} - x_{ij}^{\text{true}}\|^2 + \varepsilon},
+  \]
+  \item Final scalar FAPE loss:
+  \[
+    L_{\text{FAPE}}
+    = \frac{1}{Z} \operatorname{mean}_{i,j}
+      \bigl(\min(d_{\text{clamp}}, d_{ij})\bigr),
+  \]
+  with clamping to avoid large gradients.
+\end{enumerate}
+
+Intuition:
+\begin{itemize}
+  \item FAPE compares relative positions of each atom in each local frame between prediction and ground truth,
+  \item It is invariant to global rigid motions of both predicted and ground truth structures, since local coordinates $x_{ij}$, $x_{ij}^{\text{true}}$ are unchanged by a common global transform.
+\end{itemize}
+
+In the structure module:
+\begin{itemize}
+  \item At each iteration they compute a low-cost FAPE using only backbone frames and C$\alpha$ atoms,
+  \item At the end they compute a full FAPE over all frames and atoms.
+\end{itemize}
+
+FAPE and IPA share the same foundation: points expressed relative to frames.
+
+\section{Torsion Angles, Rigid Groups, and All-Atom Reconstruction}
+
+\subsection{Torsion-Angle Representation}
+
+From $s_i$ and $s_i^{\text{initial}}$, a small residual network predicts, for each residue $i$ and torsion type $f$ (e.g.\ $\omega$, $\phi$, $\psi$, $\chi_1$--$\chi_4$), a vector $\tilde{\alpha}_i^f \in \mathbb{R}^2$.
+
+These vectors are normalized to lie on the unit circle when used, effectively representing torsion angles as $(\cos\theta, \sin\theta)$. This:
+\begin{itemize}
+  \item avoids discontinuities at $2\pi$,
+  \item allows constructing rotations without explicit trigonometric function calls.
+\end{itemize}
+
+An auxiliary loss encourages $\|\tilde{\alpha}_i^f\|$ to be close to $1$.
+
+\subsection{Rigid Groups and Atom Templates}
+
+Each amino acid is decomposed into a small number of rigid groups (backbone and side-chain torsion segments). For each residue $i$ and group $f$:
+\begin{itemize}
+  \item there is a frame $T_i^f$ obtained by rotating about the relevant bond axis by the torsion angle, starting from $T_i$ and chaining down the side-chain tree,
+  \item there is a fixed ``template'' position for each atom $a$ in the local coordinates of group $f$.
+\end{itemize}
+
+Algorithm~\texttt{computeAllAtomCoordinates} uses these to produce coordinates:
+\begin{enumerate}
+  \item Build $T_i^f$ for each group $f$ using $T_i$ and torsions $\alpha_i^f$,
+  \item For each atom $a$ belonging to group $f$, compute global coordinates
+  \[
+    \tilde{x}_i^a = T_i^f \circ x_{i}^{a,\text{template}}.
+  \]
+\end{enumerate}
+
+Symmetric groups (e.g.\ certain $\chi_2$ groups) are handled with special renaming procedures to avoid penalizing symmetry-equivalent side-chain orientations.
+
+\section{Putting It All Together}
+
+A single pass of the structure module can be viewed as follows.
+
+\subsection{Residue-Gas Initialization}
+
+We start from:
+\begin{itemize}
+  \item single representations $s_i$,
+  \item pair representations $z_{ij}$,
+  \item initial frames $T_i=(I,0)$ (a ``residue gas'' with frames at the origin).
+\end{itemize}
+
+\subsection{Structure Blocks}
+
+For each of the $8$ structure blocks:
+\begin{enumerate}
+  \item \textbf{IPA:}
+  \begin{itemize}
+    \item converts $s_i$ into queries, keys, values and point features per head,
+    \item uses frames $T_i$ to compute distance-based attention biases in 3D,
+    \item mixes feature similarity, pair information, and geometry,
+    \item outputs updated $s_i$ and local point features invariant to global transforms.
+  \end{itemize}
+  \item \textbf{Transition MLP:}
+  \begin{itemize}
+    \item further refines $s_i$ via a residual MLP, with LayerNorm and dropout.
+  \end{itemize}
+  \item \textbf{BackboneUpdate:}
+  \begin{itemize}
+    \item predicts small frame updates $\Delta T_i$ via quaternions and translations,
+    \item composes these into $T_i$.
+  \end{itemize}
+  \item \textbf{Intermediate supervision:}
+  \begin{itemize}
+    \item uses current backbone frames to compute a backbone-only FAPE and torsion losses.
+  \end{itemize}
+  \item \textbf{Stability trick:}
+  \begin{itemize}
+    \item if not the last block, stop gradients through rotations $R_i$.
+  \end{itemize}
+\end{enumerate}
+
+Over $8$ iterations, this behaves like an $\mathrm{SE}(3)$-equivariant message-passing network built explicitly on frames and attention.
+
+\subsection{Final Prediction and Loss}
+
+After the last block:
+\begin{enumerate}
+  \item Use final frames and torsion angles to compute rigid-group frames and all-atom coordinates,
+  \item Rename symmetric atoms in the ground truth to best align with predicted symmetric groups,
+  \item Compute full FAPE over all rigid frames and atoms,
+  \item Compute per-residue lDDT-C$\alpha$ to train the confidence predictor pLDDT.
+\end{enumerate}
+
+Because FAPE strongly penalizes frame misalignment, and frames themselves are constructed from N--C$\alpha$--C and torsions, the loss encourages correct backbone geometry and side-chain packing.
+
+\section{Mathematical Background Recap}
+
+\subsection{Dot Product and Norm}
+
+For $u,v \in \mathbb{R}^d$:
+\begin{itemize}
+  \item dot product: $u^\top v = \sum_{k=1}^d u_k v_k$,
+  \item norm: $\|u\| = \sqrt{u^\top u}$,
+  \item squared Euclidean distance: $\|u - v\|^2 = \|u\|^2 + \|v\|^2 - 2 u^\top v$.
+\end{itemize}
+
+These appear in:
+\begin{itemize}
+  \item standard attention logits via $q^\top k$,
+  \item IPA distance terms $\|T_i \circ \tilde{q} - T_j \circ \tilde{k}\|^2$,
+  \item FAPE's local distances inside frames.
+\end{itemize}
+
+\subsection{Softmax}
+
+For $\ell \in \mathbb{R}^n$,
+\[
+  \operatorname{softmax}(\ell)_j
+  = \frac{e^{\ell_j}}{\sum_k e^{\ell_k}}.
+\]
+
+This maps arbitrary scores to positive weights summing to $1$. Attention uses softmax over the key index $j$ for each query $i$ and head $h$.
+
+\subsection{Gram--Schmidt Orthogonalization}
+
+Given non-collinear $v_1, v_2 \in \mathbb{R}^3$:
+\begin{enumerate}
+  \item $e_1 = v_1/\|v_1\|$,
+  \item remove the component of $v_2$ along $e_1$:
+  \[
+    u_2 = v_2 - e_1 (e_1^\top v_2),
+  \]
+  \item normalize: $e_2 = u_2/\|u_2\|$,
+  \item define $e_3 = e_1 \times e_2$.
+\end{enumerate}
+
+Then $(e_1, e_2, e_3)$ is an orthonormal basis. This is what \texttt{rigidFrom3Points} implements.
+
+\subsection{Cross Product}
+
+For $a,b \in \mathbb{R}^3$, the cross product $a \times b$ is perpendicular to both, with length $\|a\|\,\|b\|\sin\theta$ (where $\theta$ is the angle between them) and direction given by the right-hand rule. It ensures right-handed frame orientation and is crucial for chirality.
+
+\subsection{Quaternions for Rotations}
+
+A unit quaternion $q = (a,b,c,d)$ with $a^2 + b^2 + c^2 + d^2 = 1$ represents a 3D rotation. The corresponding rotation matrix is
+\[
+R =
+\begin{pmatrix}
+  a^2 + b^2 - c^2 - d^2 & 2bc - 2ad & 2bd + 2ac \\
+  2bc + 2ad & a^2 - b^2 + c^2 - d^2 & 2cd - 2ab \\
+  2bd - 2ac & 2cd + 2ab & a^2 - b^2 - c^2 + d^2
+\end{pmatrix}.
+\]
+
+Quaternions are convenient for learning rotations because:
+\begin{itemize}
+  \item normalizing a quaternion guarantees a valid rotation,
+  \item small deviations from $(1,0,0,0)$ correspond to small rotations.
+\end{itemize}
+
+\subsection{Invariance vs.\ Equivariance, Again}
+
+Summarizing:
+\begin{itemize}
+  \item IPA is invariant to global $\mathrm{SE}(3)$ because it uses relative distances expressed via frames and maps value points back to local frames,
+  \item BackboneUpdate composes local transforms, so a global transform applied to input frames yields outputs transformed in the same way.
+\end{itemize}
+
+\section{Big-Picture Intuition for IPA}
+
+One can picture each IPA head as:
+\begin{itemize}
+  \item defining a learned pattern of points in each residue's local frame,
+  \item when residue $i$ looks at residue $j$, using current frames to map these point sets into global space and checking how well they align, while also using feature similarity and pair information,
+  \item assigning higher attention to residues whose patterns line up and whose features agree,
+  \item aggregating both value features and value points from neighbors, then mapping aggregated points back into residue $i$'s frame.
+\end{itemize}
+
+Thus each head is a geometry-aware attention mechanism that:
+\begin{itemize}
+  \item biases attention towards geometrically compatible residues,
+  \item transports geometric information in a frame-invariant way.
+\end{itemize}
+
+This design allows the structure module to iteratively refine structure in 3D while being robust to arbitrary choices of global coordinate system.
+
+\end{document}
+

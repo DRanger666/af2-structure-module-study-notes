@@ -1,0 +1,427 @@
+\documentclass[12pt, a4paper]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{graphicx}
+\usepackage{longtable}
+\usepackage{xcolor}
+\usepackage{hyperref}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue,
+  filecolor=magenta,
+  urlcolor=cyan,
+}
+
+\title{Alternative Explanation of Point Features in IPA}
+\author{Study Notes}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\section{Motivation}
+
+This note provides an alternative, slightly more streamlined explanation of \emph{point features} in invariant point attention (IPA). The focus is on:
+\begin{itemize}
+  \item where the description comes from in the AF2 supplementary material,
+  \item what point features actually are,
+  \item how they fit into the usual Q/K/V picture of self-attention,
+  \item why frames and local/global coordinates appear when distances enter the attention score.
+\end{itemize}
+
+\section{Do Point Features Really Appear in AF2?}
+
+Yes. All components are present in the AF2 supplementary.
+\begin{enumerate}
+  \item In Supplementary Methods~1.8.2:
+  \begin{quote}
+  Invariant Point Attention (IPA) (Suppl.\ Fig.~8 and Algorithm~22) is a form of attention that acts on a set of frames (parametrized as Euclidean transforms $(T_i)$) and is invariant under global Euclidean transformations $(T_{\text{global}})$ on said frames.
+  \end{quote}
+  \item Supplementary Figure~8 shows the IPA module; its caption mentions
+  \begin{quote}
+  query pts.\ $(r, h, p, 3)$, key pts.\ $(r, h, p, 3)$, value pts.\ $(r, h, p', 3)$, coordinates in local frames, coordinates in the global frame.
+  \end{quote}
+  \item Algorithm~22 defines IPA as
+  \[
+    \texttt{InvariantPointAttention}(\{s_i\}, \{z_{ij}\}, \{T_i\},
+      N_{\text{head}} = 12, c = 16,
+      N_{\text{query points}} = 4, N_{\text{point values}} = 8),
+  \]
+  and lines~2--3 produce
+  \begin{itemize}
+    \item query/key points $\tilde{q}_i^{hp}, \tilde{k}_i^{hp} \in \mathbb{R}^3$, $p=1,\dots,N_{\text{query points}}$,
+    \item value points $\tilde{v}_i^{hp} \in \mathbb{R}^3$, $p=1,\dots,N_{\text{point values}}$.
+  \end{itemize}
+\end{enumerate}
+
+Thus the paraphrase
+\begin{quote}
+Scalar features $s_i$ are projected to queries, keys, values of shape $N_{\text{res}} \times d_{\text{head}}$, and to point features of shape $N_{\text{res}} \times N_{\text{pts}} \times 3$ with $N_{\text{query pts}} = 4$ and $N_{\text{point values}} = 8$,
+\end{quote}
+is an accurate summary of Algorithm~22 and Supplementary Figure~8.
+
+\section{Standard Self-Attention: Grounding the Mental Model}
+
+Consider standard self-attention. We have a sequence of positions $i$, each with a feature vector
+\[
+  s_i \in \mathbb{R}^{d_{\text{model}}}.
+\]
+
+For a single head:
+\begin{align*}
+  q_i &= W_Q s_i \in \mathbb{R}^{d_{\text{head}}}, \\
+  k_i &= W_K s_i \in \mathbb{R}^{d_{\text{head}}}, \\
+  v_i &= W_V s_i \in \mathbb{R}^{d_{\text{head}}}.
+\end{align*}
+
+For each pair $(i,j)$:
+\begin{align*}
+  \ell_{ij} &= \frac{1}{\sqrt{d_{\text{head}}}}\, q_i^\top k_j, \\
+  a_{ij} &= \frac{\exp(\ell_{ij})}{\sum_{j'} \exp(\ell_{ij'})}, \\
+  o_i &= \sum_j a_{ij} v_j.
+\end{align*}
+
+The pattern is:
+\begin{enumerate}
+  \item Define a similarity score between $i$ and $j$ (usually a dot product),
+  \item Apply softmax to get weights,
+  \item Use the weights to form a weighted sum of value vectors.
+\end{enumerate}
+
+Crucially:
+\begin{quote}
+The notion of ``attention'' is encoded entirely in the score function $\ell_{ij}$. We can add terms to $\ell_{ij}$ (biases, distance penalties, etc.) and still have self-attention.
+\end{quote}
+
+\section{Extra Structure in the AF2 Structure Module}
+
+In the structure module, each residue $i$ has:
+\begin{itemize}
+  \item the usual scalar feature vector $s_i \in \mathbb{R}^{c_s}$,
+  \item a rigid frame $T_i = (R_i, t_i)$ (rotation $R_i$ and translation $t_i$).
+\end{itemize}
+
+The frame defines a local coordinate system:
+\begin{itemize}
+  \item local coordinates: $\tilde{x} \in \mathbb{R}^3$ describing a point relative to residue $i$'s C$\alpha$,
+  \item global coordinates: $x \in \mathbb{R}^3$ in the shared protein frame.
+\end{itemize}
+
+The mapping is:
+\begin{itemize}
+  \item local $\to$ global:
+  \[
+    x = T_i \circ \tilde{x} = R_i \tilde{x} + t_i,
+  \]
+  \item global $\to$ local:
+  \[
+    \tilde{x} = T_i^{-1} \circ x = R_i^\top (x - t_i).
+  \]
+\end{itemize}
+
+Backbone frames are built from N, C$\alpha$, and C via Algorithm~21 and Gram--Schmidt, with the origin at C$\alpha$.
+
+So each residue $i$ has:
+\begin{itemize}
+  \item a feature vector $s_i$,
+  \item a local 3D frame $T_i$.
+\end{itemize}
+IPA is the attention mechanism that uses \emph{both}.
+
+\section{Two Kinds of Features in IPA: Scalar and Point}
+
+Inside IPA, each residue $i$ yields two families of features from $s_i$:
+\begin{enumerate}
+  \item the usual scalar queries, keys, and values,
+  \item a small set of 3D point features.
+\end{enumerate}
+
+\subsection{Scalar Q, K, V (Familiar Part)}
+
+Algorithm~22, line~1:
+\[
+  q_i^h, k_i^h, v_i^h = \operatorname{LinearNoBias}(s_i),
+  \quad q_i^h, k_i^h, v_i^h \in \mathbb{R}^c.
+\]
+For each head $h$ and residue $i$:
+\begin{itemize}
+  \item $q_i^h$ is the query vector,
+  \item $k_i^h$ is the key vector,
+  \item $v_i^h$ is the value vector.
+\end{itemize}
+
+This matches the standard Transformer pattern.
+
+\subsection{Point Q, K, V (New Part)}
+
+Algorithm~22, lines~2--3:
+\begin{align*}
+  \tilde{q}_i^{hp}, \tilde{k}_i^{hp}
+    &= \operatorname{LinearNoBias}(s_i),
+    &\tilde{q}_i^{hp}, \tilde{k}_i^{hp} \in \mathbb{R}^3,
+    &p=1,\dots,N_{\text{query points}}, \\
+  \tilde{v}_i^{hp}
+    &= \operatorname{LinearNoBias}(s_i),
+    &\tilde{v}_i^{hp} \in \mathbb{R}^3,
+    &p=1,\dots,N_{\text{point values}}.
+\end{align*}
+
+Algorithm arguments specify:
+\[
+  N_{\text{query points}} = 4, \qquad
+  N_{\text{point values}} = 8.
+\]
+
+In terms of shapes:
+\begin{itemize}
+  \item query points form
+  \[
+    \tilde{q}
+    \in \mathbb{R}^{N_{\text{res}} \times N_{\text{head}}
+                   \times N_{\text{query points}} \times 3},
+  \]
+  \item similarly for key points $\tilde{k}$,
+  \item value points form
+  \[
+    \tilde{v}
+    \in \mathbb{R}^{N_{\text{res}} \times N_{\text{head}}
+                   \times N_{\text{point values}} \times 3}.
+  \]
+\end{itemize}
+
+These $3$-dimensional vectors are what the supplementary and Figure~8 call \emph{point features}. They are:
+\begin{quote}
+Learned functions of $s_i$, like Q/K/V, but living in $\mathbb{R}^3$ and transforming like points under rigid motions.
+\end{quote}
+
+Per head and residue, we now have:
+\begin{itemize}
+  \item scalar query vector $q_i^h$,
+  \item point query cloud $\{\tilde{q}_i^{hp}\}_p$,
+  \item scalar key and value vectors,
+  \item point key and value clouds.
+\end{itemize}
+
+\section{How Point Features Enter the Attention Score}
+
+We connect this to the ``attention is dot products'' view.
+
+Algorithm~22, line~7 gives, for head $h$:
+\[
+  a_{ij}^h
+  = \operatorname{softmax}_j
+      \left(
+        w_L \left[
+          \sqrt{\frac{1}{c}}\, q_i^{h\top} k_j^h
+          + b_{ij}^h
+          - \gamma_h w_C^2
+            \sum_p \bigl\|
+              T_i \circ \tilde{q}_i^{hp}
+              - T_j \circ \tilde{k}_j^{hp}
+            \bigr\|^2
+        \right]
+      \right).
+\]
+
+Three components inside the brackets:
+\begin{enumerate}
+  \item \textbf{Dot product term}
+  \[
+    \sqrt{\tfrac{1}{c}}\, q_i^{h\top} k_j^h
+  \]
+  is the standard scaled dot-product similarity.
+
+  \item \textbf{Pair bias term} $b_{ij}^h$ comes from $z_{ij}$ via a linear map and depends only on the residue pair.
+
+  \item \textbf{Geometric distance term}
+  \[
+    - \gamma_h w_C^2
+      \sum_p \bigl\|T_i \circ \tilde{q}_i^{hp}
+                   - T_j \circ \tilde{k}_j^{hp}\bigr\|^2.
+  \]
+\end{enumerate}
+
+\subsection{Geometry Inside the Distance}
+
+For each point index $p$:
+\begin{itemize}
+  \item $\tilde{q}_i^{hp}$ is in the local frame of residue $i$,
+  \item $\tilde{k}_j^{hp}$ is in the local frame of residue $j$,
+  \item local-to-global mapping yields
+  \[
+    T_i \circ \tilde{q}_i^{hp} = R_i \tilde{q}_i^{hp} + t_i,
+    \qquad
+    T_j \circ \tilde{k}_j^{hp} = R_j \tilde{k}_j^{hp} + t_j,
+  \]
+  \item subtracting these gives a global 3D displacement and squared distance.
+\end{itemize}
+
+Summing over $p$,
+\[
+  D_{ij}^h
+  = \sum_p \bigl\| T_i \circ \tilde{q}_i^{hp}
+                  - T_j \circ \tilde{k}_j^{hp} \bigr\|^2,
+\]
+so the geometric contribution is
+\[
+  -\gamma_h w_C^2 D_{ij}^h.
+\]
+
+Because of the minus sign:
+\begin{itemize}
+  \item if the query and key point clouds for $i$ and $j$ are close in 3D, $D_{ij}^h$ is small and the penalty is small,
+  \item if they are far apart, $D_{ij}^h$ is large and pushes the logit down.
+\end{itemize}
+
+For each head $h$:
+\begin{quote}
+Residue $i$ prefers to attend to residues $j$ whose learned key-point pattern is close in 3D to its own learned query-point pattern, given the current frames.
+\end{quote}
+
+The full score is still ``dot product plus bias plus a distance-based bias'', so the mental model becomes:
+\begin{quote}
+Attention is a dot product in feature space plus additional similarity/bias terms; IPA adds one that depends on 3D distances between learned point features.
+\end{quote}
+
+\section{Why Frames and Local/Global Coordinates Are Needed}
+
+You might ask: why do local/global and frames appear at all?
+
+Reasons:
+\begin{itemize}
+  \item Query and key points are stored in local coordinates, one coordinate system per residue,
+  \item Local coordinates are not directly comparable across residues: each residue has its own origin and axes,
+  \item To compute a meaningful distance between a point on residue $i$ and a point on residue $j$, we must express them in a common coordinate system.
+\end{itemize}
+
+Frames provide this bridge:
+\begin{itemize}
+  \item local to global: $T_i \circ \tilde{q}_i^{hp}$ places $\tilde{q}_i^{hp}$ in global 3D,
+  \item global distances: we subtract global points and compute Euclidean norms, which have physical meaning.
+\end{itemize}
+
+If we tried instead to subtract $\tilde{q}_i^{hp} - \tilde{k}_j^{hp}$ directly, we would be mixing two unrelated coordinate systems; the resulting vector would not correspond to any physical displacement.
+
+So:
+\begin{itemize}
+  \item point features live in local frames,
+  \item frames $T_i$ convert them to global coordinates for comparison,
+  \item distances are computed in global space, the only place where they make sense across residues.
+\end{itemize}
+
+\section{Invariance of the Score Under Global Rigid Motions}
+
+There is a second reason for the local/global machinery: IPA should be invariant to where the whole protein sits in space.
+
+The supplement proves that applying a global rigid transform $T_{\text{global}}$ to all frames leaves the logits unchanged.
+
+Sketch:
+\begin{itemize}
+  \item Replace each frame with $T_i' = T_{\text{global}} \circ T_i$,
+  \item The distance term transforms to
+  \[
+    \bigl\|T_i' \circ \tilde{q}_i^{hp}
+           - T_j' \circ \tilde{k}_j^{hp}\bigr\|^2
+    = \bigl\|T_{\text{global}} \circ (T_i \circ \tilde{q}_i^{hp})
+           - T_{\text{global}} \circ (T_j \circ \tilde{k}_j^{hp})\bigr\|^2,
+  \]
+  \item Since rigid transforms preserve distances, this equals
+  \[
+    \bigl\|T_i \circ \tilde{q}_i^{hp}
+           - T_j \circ \tilde{k}_j^{hp}\bigr\|^2,
+  \]
+  \item Dot product and pair bias do not depend on frames, so the entire logit and therefore $a_{ij}^h$ are unchanged.
+\end{itemize}
+
+Thus local/global not only enables distances, but also ensures those distances are invariant under global rotation and translation.
+
+\section{Point Features in the Outputs}
+
+Point features appear not only in the scores but also in the outputs of IPA. Given weights $a_{ij}^h$, Algorithm~22 defines three outputs:
+\begin{enumerate}
+  \item \textbf{Pair-weighted pair representation}
+  \[
+    \tilde{o}_i^h = \sum_j a_{ij}^h z_{ij},
+  \]
+  \item \textbf{Standard scalar value aggregation}
+  \[
+    o_i^h = \sum_j a_{ij}^h v_j^h,
+  \]
+  \item \textbf{Point aggregation with frames}
+  \[
+    \tilde{o}_i^{hp}
+    = T_i^{-1} \circ
+      \left(
+        \sum_j a_{ij}^h
+          (T_j \circ \tilde{v}_j^{hp})
+      \right).
+  \]
+\end{enumerate}
+
+For the point aggregation:
+\begin{itemize}
+  \item For each neighbor $j$, map $\tilde{v}_j^{hp}$ from local to global:
+  \[
+    x_{j,\text{global}}^{hp} = T_j \circ \tilde{v}_j^{hp},
+  \]
+  \item Take an attention-weighted average in global space:
+  \[
+    y_{i,\text{global}}^{hp}
+      = \sum_j a_{ij}^h x_{j,\text{global}}^{hp},
+  \]
+  \item Map back into residue $i$'s local frame:
+  \[
+    \tilde{o}_i^{hp} = T_i^{-1} \circ y_{i,\text{global}}^{hp}.
+  \]
+\end{itemize}
+
+Thus $\tilde{o}_i^{hp}$ is a new point feature in residue $i$'s local frame, summarizing the 3D neighborhood indicated by attention.
+
+The same invariance argument shows that if we apply the same global transform to all frames, the local outputs $\tilde{o}_i^{hp}$ remain unchanged.
+
+So point features appear on both sides of IPA:
+\begin{itemize}
+  \item as point clouds in the score,
+  \item as aggregated point clouds in the outputs.
+\end{itemize}
+
+\section{Unified Transformer Mental Model}
+
+If we strip away geometry, IPA reduces to:
+\begin{itemize}
+  \item standard multi-head attention on $s_i$ with
+  \begin{itemize}
+    \item scalar $Q/K/V$,
+    \item dot-product scores,
+    \item pair bias from $z_{ij}$,
+  \end{itemize}
+\end{itemize}
+which is entirely ordinary in modern Transformers.
+
+IPA adds:
+\begin{enumerate}
+  \item a set of 3D point features (query, key, value points) per residue and head, derived from $s_i$,
+  \item an extra term in the score penalizing squared distances between query and key point clouds (after mapping through frames),
+  \item a point-valued output pathway aggregating value point clouds in global 3D and then mapping back to residue-local coordinates.
+\end{enumerate}
+
+Everything still fits the same template:
+\begin{itemize}
+  \item compute scalar scores from Q, K, pair bias, and geometric distances,
+  \item apply softmax to get attention weights,
+  \item form weighted sums over scalar values and point values.
+\end{itemize}
+
+The logic becomes:
+\begin{quote}
+Start from standard attention; attach a small 3D sensor array (point features) to each residue via its frame; use these sensors to make attention geometry-aware while preserving $\mathrm{SE}(3)$ invariance.
+\end{quote}
+
+That is all point features are: a method to inject 3D geometry into the familiar Q/K/V framework without sacrificing symmetry.
+
+\end{document}
+

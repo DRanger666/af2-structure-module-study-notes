@@ -1,0 +1,187 @@
+\documentclass[12pt, a4paper]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{graphicx}
+\usepackage{longtable}
+\usepackage{xcolor}
+\usepackage{hyperref}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue,
+  filecolor=magenta,
+  urlcolor=cyan,
+}
+
+\title{Rotations and Invariance in 3D Geometry}
+\author{Study Notes}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\section{Overview}
+
+This note summarizes key concepts about how rotation matrices transform vectors while preserving essential geometric properties. It distinguishes absolute from relative changes, explains invariance under rigid transformations, and highlights the role of the dot product as a foundational invariant.
+
+\section{What a Rotation Matrix Does to a Single Vector}
+
+A rotation matrix $R$ reorients vectors in space, changing their \emph{absolute direction} while leaving some properties intact. For a single vector $\vec{v}$, the transformation $R \vec{v}$ points in a new direction, but its length is preserved.
+
+\paragraph{Example.}
+
+Let $\vec{v} = (1,0,0)$ point along the positive $x$-axis. Consider a $90^\circ$ counter-clockwise rotation about the $z$-axis:
+\[
+  R =
+  \begin{pmatrix}
+    0 & -1 & 0 \\
+    1 & 0 & 0 \\
+    0 & 0 & 1
+  \end{pmatrix}.
+\]
+Then
+\[
+  R \vec{v} = (0,1,0),
+\]
+which now points along the positive $y$-axis: its direction has clearly changed.
+
+\paragraph{Preserved property: length.}
+
+Rotation preserves the norm:
+\[
+  \|R \vec{v}\| = \|\vec{v}\|.
+\]
+This follows from orthogonality ($R^\top R = I$):
+\[
+\begin{aligned}
+  \|R \vec{v}\|
+    &= \sqrt{(R \vec{v})^\top (R \vec{v})}
+     = \sqrt{\vec{v}^\top R^\top R \vec{v}}
+     = \sqrt{\vec{v}^\top I \vec{v}}
+     = \sqrt{\vec{v}^\top \vec{v}}
+     = \|\vec{v}\|.
+\end{aligned}
+\]
+
+Thus, for a single vector, a rotation changes orientation but neither stretches nor shrinks it.
+
+\section{What ``Preserving Orientation'' Really Means}
+
+In geometry, ``preserving orientation'' does not mean vectors keep their absolute directions; instead it means that \emph{relative orientations} across a set of vectors are maintained. A rotation $R$ acts like twisting a rigid body: everything moves together, but internal relationships (angles, handedness, etc.) remain fixed.
+
+A rotation $R \in SO(3)$ (orthogonal with $\det R = +1$) preserves:
+
+\begin{itemize}
+  \item \textbf{Lengths.} As shown above, there is no scaling.
+  \item \textbf{Angles between vectors.} If $\theta$ is the angle between $\vec{v}_1$ and $\vec{v}_2$, then
+  \[
+    \cos \theta
+      = \frac{(R \vec{v}_1) \cdot (R \vec{v}_2)}{\|R \vec{v}_1\|\,\|R \vec{v}_2\|}
+      = \frac{\vec{v}_1 \cdot \vec{v}_2}{\|\vec{v}_1\|\,\|\vec{v}_2\|}.
+  \]
+  \item \textbf{Handedness/chirality.} The right-handed vs.\ left-handed nature of coordinate systems does not flip (reflections with $\det R = -1$ would flip it).
+  \item \textbf{Relative orientations.} If $\vec{v}_2$ was ``to the right'' of $\vec{v}_1$ before, it still is after applying $R$; the entire configuration rotates as a rigid unit.
+  \item \textbf{Dot products.} The scalar overlap
+  \[
+    \vec{v}_1 \cdot \vec{v}_2
+  \]
+  is invariant:
+  \[
+    (R \vec{v}_1) \cdot (R \vec{v}_2)
+      = \vec{v}_1^\top R^\top R \vec{v}_2
+      = \vec{v}_1^\top I \vec{v}_2
+      = \vec{v}_1 \cdot \vec{v}_2.
+  \]
+  \item \textbf{Cross-product direction (in 3D).} The perpendicular direction is preserved:
+  \[
+    R (\vec{v}_1 \times \vec{v}_2)
+      = (R \vec{v}_1) \times (R \vec{v}_2),
+  \]
+  consistent with $\det R = +1$.
+  \item \textbf{Absence of scaling/shearing.} Shapes are not distorted; $R$ is a rigid motion.
+\end{itemize}
+
+\paragraph{Summary of invariants under $R$.}
+
+Rotation preserves:
+\begin{itemize}
+  \item lengths $\|\vec{v}\|$,
+  \item angles between vectors,
+  \item dot products $\vec{v}_1 \cdot \vec{v}_2$,
+  \item directions of cross products (and thus handedness),
+  \item relative orientations within a configuration.
+\end{itemize}
+
+The dot product is foundational: it encodes both magnitudes and angles, and its invariance underlies all the other geometric invariants.
+
+\paragraph{Analogy.}
+
+Think of a book on a desk. Rotating the book by $90^\circ$ changes which direction the cover faces (absolute orientation) but the text layout is unchanged: lines of text, spacing, and relative positions of words are preserved. That is the notion of preserving orientation for a rigid object.
+
+\section{Step-by-Step Derivation of Dot-Product Invariance}
+
+We now derive dot-product invariance explicitly. Let $\vec{v}_1, \vec{v}_2 \in \mathbb{R}^3$ and $R \in SO(3)$.
+
+\paragraph{1. Dot product definition.}
+\[
+  (R \vec{v}_1) \cdot (R \vec{v}_2)
+  \triangleq (R \vec{v}_1)^\top (R \vec{v}_2).
+\]
+
+\paragraph{2. Expand the transpose.}
+
+Using $(AB)^\top = B^\top A^\top$,
+\[
+  (R \vec{v}_1)^\top
+  = \vec{v}_1^\top R^\top.
+\]
+Thus
+\[
+\begin{aligned}
+  (R \vec{v}_1)^\top (R \vec{v}_2)
+    &= \vec{v}_1^\top R^\top (R \vec{v}_2) \\
+    &= \vec{v}_1^\top (R^\top R) \vec{v}_2.
+\end{aligned}
+\]
+
+\paragraph{3. Use orthogonality.}
+
+Since $R^\top R = I$,
+\[
+  \vec{v}_1^\top (R^\top R) \vec{v}_2
+    = \vec{v}_1^\top I \vec{v}_2
+    = \vec{v}_1^\top \vec{v}_2
+    = \vec{v}_1 \cdot \vec{v}_2.
+\]
+
+Hence
+\[
+  (R \vec{v}_1) \cdot (R \vec{v}_2)
+  = \vec{v}_1 \cdot \vec{v}_2,
+\]
+so the dot product is invariant under rotations. This argument extends to any dimension where $R$ is orthogonal.
+
+\section{Translation: No Change to Orientation}
+
+Rigid motions in $\mathrm{SE}(3)$ consist of a rotation and a translation. A translation by $t \in \mathbb{R}^3$ does not affect orientation; it simply relocates the entire configuration.
+
+Consider two points corresponding to vectors $\vec{v}$ and $\vec{w}$. After rotation and translation:
+\[
+  R \vec{v} + t,\quad R \vec{w} + t.
+\]
+Their distance remains the same:
+\[
+\begin{aligned}
+  \| (R \vec{v} + t) - (R \vec{w} + t) \|
+    &= \| R (\vec{v} - \vec{w}) \| \\
+    &= \|\vec{v} - \vec{w}\|.
+\end{aligned}
+\]
+
+The translation cancels when taking differences, and the remaining rotation preserves the norm. Conceptually, this is like sliding the book across the desk: internal structure (text, angles, distances) is unchanged, only the global position changes.
+
+\end{document}
+
