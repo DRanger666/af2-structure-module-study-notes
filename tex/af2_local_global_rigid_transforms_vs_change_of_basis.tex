@@ -1,0 +1,170 @@
+\documentclass[12pt, a4paper]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{graphicx}
+\usepackage{longtable}
+\usepackage{xcolor}
+\usepackage{hyperref}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue,
+  filecolor=magenta,
+  urlcolor=cyan,
+}
+
+\title{Local--Global Frames vs.\ Pure Change of Basis}
+\author{Study Notes}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\section{Question}
+
+Are the local--global coordinate transforms used in the AF2 structure module merely ``change of basis'' operations?
+
+Short answer: \emph{no}. The local $\to$ global maps in AF2 are not just change of basis in the strict linear-algebra sense, although the \emph{rotational} part can be viewed as a change of orthonormal basis. The full local $\to$ global map is an \emph{affine rigid transform}: rotation plus translation. That distinction matters.
+
+\section{What ``Change of Basis'' Means in Linear Algebra}
+
+In a pure change of basis:
+\begin{itemize}
+  \item We fix a single vector space $V$ with one origin.
+  \item We choose two bases $B$ and $B'$ for $V$.
+  \item Coordinates of the \emph{same} vector $v$ in these bases are related by an invertible matrix $S$:
+  \[
+    [v]_{B'} = S^{-1}[v]_B,\qquad [v]_B = S[v]_{B'}.
+  \]
+  \item The underlying map on $V$ is the identity: we are simply reexpressing the same geometric vector in different coordinates.
+  \item The map is linear and sends $0$ to $0$.
+\end{itemize}
+
+Thus a pure basis change is:
+\begin{itemize}
+  \item global (one basis for the entire space),
+  \item linear,
+  \item origin-preserving.
+\end{itemize}
+
+\section{AF2's Local $\to$ Global Map}
+
+For residue $i$, the structure module maintains a frame
+\[
+  T_i = (R_i, t_i),
+\]
+and defines the local $\to$ global map by
+\[
+  x_{\text{global}}
+    = T_i \circ x_{\text{local}}
+    = R_i x_{\text{local}} + t_i.
+\]
+
+Key observations:
+\begin{itemize}
+  \item There is a nonzero translation $t_i$: the origin of the local frame is at the C$\alpha$ atom of residue $i$, which generally does not coincide with the global origin.
+  \item As a map $\mathbb{R}^3 \to \mathbb{R}^3$, $x \mapsto R_i x + t_i$ is \emph{not} linear:
+  \begin{itemize}
+    \item $T_i(0) = t_i \neq 0$,
+    \item $T_i(x + y) \neq T_i(x) + T_i(y)$ unless $t_i = 0$.
+  \end{itemize}
+  \item Each residue has its own frame, hence its own translation $t_i$. There is no single global basis change relating all local frames simultaneously.
+\end{itemize}
+
+Therefore $T_i$ is an element of the Euclidean group $\mathrm{SE}(3)$: a rigid motion (rotation + translation), not merely a change of basis in a single vector space with fixed origin.
+
+\section{How Rotation \texorpdfstring{$R_i$}{Ri} Relates to Change of Basis}
+
+If we ignore the translation and consider only the rotation
+\[
+  R_i : \mathbb{R}^3 \to \mathbb{R}^3,
+\]
+then $R_i$ can be viewed as a change of orthonormal basis between:
+\begin{itemize}
+  \item the residue's local axes (basis vectors $e^{(i)}_1, e^{(i)}_2, e^{(i)}_3$),
+  \item the global axes (standard basis).
+\end{itemize}
+
+In this interpretation:
+\begin{itemize}
+  \item $R_i$ encodes how the local basis sits inside the global basis.
+  \item The relationships
+  \[
+    x_{\text{global}} - t_i = R_i x_{\text{local}},\qquad
+    x_{\text{local}} = R_i^\top (x_{\text{global}} - t_i)
+  \]
+  are exactly ``change of basis + shift of origin''.
+\end{itemize}
+
+So we may summarize:
+\begin{itemize}
+  \item the rotational part $R_i$ behaves like a change of basis between directions;
+  \item the full frame $T_i$ combines that change of basis with moving the origin to the C$\alpha$ of residue $i$.
+\end{itemize}
+
+\section{Active vs.\ Passive Viewpoints}
+
+There is also a conceptual difference between two viewpoints:
+\begin{itemize}
+  \item \textbf{Passive (coordinate) viewpoint.} We keep the physical point fixed and reexpress it in another frame. This is what
+  \[
+    x_{\text{local}} = T_i^{-1} \circ x_{\text{global}}
+  \]
+  is doing: expressing a global point in residue-$i$ coordinates.
+
+  \item \textbf{Active (transform) viewpoint.} We move the point cloud itself in space, for example by applying a global $T_{\text{global}}$ to all frames $T_i$. This corresponds to physically rotating/translating the entire structure.
+\end{itemize}
+
+In Euclidean spaces these share the same matrices, but:
+\begin{itemize}
+  \item change of basis in the strict linear-algebra sense is purely passive and linear (no translations),
+  \item AF2's $T_i$ is an \emph{affine frame map}: it combines a passive change of axes with an origin shift tied to residue $i$.
+\end{itemize}
+
+\section{Why This Matters for IPA and FAPE}
+
+Both IPA and FAPE rely on expressing points via the transforms
+\[
+  x_{\text{global}} = R_i x_{\text{local}} + t_i,\qquad
+  x_{\text{local}} = R_i^\top (x_{\text{global}} - t_i),
+\]
+which treat frames as rigid placements of local coordinate systems in global space.
+
+Distances such as
+\[
+  \bigl\|T_i \circ \tilde{q}_i^{hp} - T_j \circ \tilde{k}_j^{hp}\bigr\|
+\]
+are distances between concrete points in global space whose positions arise from both the rotations $R_i, R_j$ and the translations $t_i, t_j$.
+
+If the transforms were merely a single global change of basis, we would have:
+\begin{itemize}
+  \item one linear map for all positions,
+  \item no per-residue translations $t_i$,
+  \item no notion of ``where in the protein'' a point is attached beyond direction.
+\end{itemize}
+
+The per-residue affine frames $T_i$ give precisely the geometric structure (placement + orientation) needed for IPA and FAPE to make sense.
+
+\section{Conclusion}
+
+\begin{itemize}
+  \item The rotational part $R_i$ is a change of orthonormal basis between local and global axes.
+  \item The full local $\leftrightarrow$ global maps
+  \[
+    x \mapsto R_i x + t_i, \qquad x \mapsto R_i^\top (x - t_i)
+  \]
+  are \emph{affine rigid transforms} (elements of $\mathrm{SE}(3)$), not pure basis changes:
+  \begin{itemize}
+    \item they move the origin,
+    \item they are residue-specific,
+    \item they correspond to placing a small coordinate system at each residue in 3D space.
+  \end{itemize}
+\end{itemize}
+
+Thus, while the rotational component is closely related to change of basis, the full AF2 local--global frame transforms are more than that.
+
+\end{document}
+

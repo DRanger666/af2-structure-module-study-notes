@@ -1,0 +1,237 @@
+\documentclass[12pt, a4paper]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{graphicx}
+\usepackage{longtable}
+\usepackage{xcolor}
+\usepackage{hyperref}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue,
+  filecolor=magenta,
+  urlcolor=cyan,
+}
+
+\title{Visual Intuition for Local vs.\ Global Frames in AF2}
+\author{Study Notes}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\section{Motivating Question}
+
+Why are local coordinates even needed in the AlphaFold~2 (AF2) structure module? Why do we go through the apparent ``gymnastics'' of local and global frames instead of working purely in one global coordinate system?
+
+This note builds a concrete mental picture, then ties it directly to how AF2 uses local frames to achieve rotational invariance in invariant point attention (IPA).
+
+\section{Mental Picture: Two Residues in the Plane}
+
+Consider a protein sitting in ordinary 3D space with a global coordinate system $(x,y,z)$. For visualization, imagine two residues:
+\begin{itemize}
+  \item residue~1 (rs1) at position $x_1 \in \mathbb{R}^3$,
+  \item residue~2 (rs2) at position $x_2 \in \mathbb{R}^3$.
+\end{itemize}
+
+For simplicity, assume both lie in the $xy$-plane ($z=0$) in the first quadrant. Intuitively, rs2 is ``down and to the right'' of rs1 (``lower-right'').
+
+We want to compare:
+\begin{itemize}
+  \item global description: ``where is rs2 relative to rs1 in the global frame?'',
+  \item local description: ``where is rs2 relative to rs1 as rs1 sees it in its own axes?''.
+\end{itemize}
+
+\section{Global vs.\ Local Description of rs2 Relative to rs1}
+
+\subsection{Global Description}
+
+In global coordinates, the vector from rs1 to rs2 is
+\[
+  v_{\text{global}} = x_2 - x_1.
+\]
+
+If we rotate the entire protein by a rotation matrix $G \in \mathrm{SO}(3)$:
+\[
+  x_1' = G x_1,\qquad x_2' = G x_2,
+\]
+then the new global vector is
+\[
+  v_{\text{global}}'
+    = x_2' - x_1'
+    = G x_2 - G x_1
+    = G (x_2 - x_1)
+    = G v_{\text{global}}.
+\]
+
+Thus in the global frame, $v_{\text{global}}$ itself rotates; its coordinates change.
+
+\subsection{Local Description: rs1's Own Coordinate System}
+
+Now suppose rs1 carries its own local axes:
+\begin{itemize}
+  \item three unit vectors $e_1, e_2, e_3$ forming an orthonormal basis attached to rs1,
+  \item in AF2 these come from the N, C$\alpha$, C atoms via Gram--Schmidt.
+\end{itemize}
+
+Pack them as columns of a rotation matrix
+\[
+  R_1 = [ e_1\ e_2\ e_3 ].
+\]
+
+Then:
+\begin{itemize}
+  \item $R_1$ maps local coordinates to global coordinates,
+  \item $R_1^\top$ maps global coordinates to local coordinates.
+\end{itemize}
+
+The coordinates of $v_{\text{global}}$ in rs1's local frame are
+\[
+  v_{\text{local}} = R_1^\top v_{\text{global}}.
+\]
+
+This is the vector ``from rs1 to rs2 as rs1 sees it'', expressed in rs1's own axes.
+
+\section{Global Rotation of the Entire Protein}
+
+Apply a global rotation $G \in \mathrm{SO}(3)$ to everything:
+\[
+  x_1' = G x_1,\qquad x_2' = G x_2,\qquad v_{\text{global}}' = G v_{\text{global}}.
+\]
+
+The backbone of rs1 (and its local axes) also rotate:
+\[
+  e_1' = G e_1,\quad e_2' = G e_2,\quad e_3' = G e_3
+\]
+so the new local-to-global matrix is
+\[
+  R_1' = [ e_1'\ e_2'\ e_3' ] = G [ e_1\ e_2\ e_3 ] = G R_1.
+\]
+
+Compute the new local coordinates of rs2 relative to rs1 after the global rotation:
+\[
+  v_{\text{local}}'
+    = (R_1')^\top v_{\text{global}}'
+    = (G R_1)^\top (G v_{\text{global}})
+    = R_1^\top G^\top G v_{\text{global}}
+    = R_1^\top v_{\text{global}}
+    = v_{\text{local}}.
+\]
+
+So:
+\begin{quote}
+The global vector from rs1 to rs2 rotates ($v_{\text{global}} \mapsto G v_{\text{global}}$), but its coordinates expressed in rs1's local frame ($v_{\text{local}}$) stay exactly the same, provided rs1's frame is rotated by the same $G$.
+\end{quote}
+
+This is the precise form of invariance that AF2 wants.
+
+\section{Why AF2 Needs Local Frames, Not Just Global Vectors}
+
+Suppose the model only used global coordinates and stored $x_2 - x_1$ directly in features:
+\begin{itemize}
+  \item Rotating the protein changes those numbers.
+  \item The network would have to learn that many rotated versions of the same neighborhood are equivalent.
+  \item We would likely need heavy data augmentation over random orientations to encourage rotational invariance.
+\end{itemize}
+
+Instead, AF2 does two key things:
+\begin{enumerate}
+  \item It associates each residue $i$ with a local frame $T_i = (R_i, t_i)$:
+  \begin{itemize}
+    \item $R_i$: orientation of residue $i$'s axes in global space,
+    \item $t_i$: global position of the origin (C$\alpha$) of residue $i$.
+  \end{itemize}
+  \item It represents learned geometric information in local coordinates:
+  \begin{itemize}
+    \item query points $\tilde{q}_i^{h,p} \in \mathbb{R}^3$ in residue-$i$'s local frame,
+    \item key points $\tilde{k}_j^{h,p} \in \mathbb{R}^3$ in residue-$j$'s local frame,
+    \item value points $\tilde{v}_j^{h,p} \in \mathbb{R}^3$ in residue-$j$'s local frame.
+  \end{itemize}
+\end{enumerate}
+
+Because these points are stored in local frames, they naturally encode relations like ``rs2 is lower-right of rs1'' in a way that is invariant under global rotations, as long as all frames transform consistently.
+
+Whenever AF2 needs to compare positions, it:
+\begin{itemize}
+  \item converts local points to global coordinates via $T_i$,
+  \item computes distances or averages in global space,
+  \item maps results back into local coordinates via $T_i^{-1}$ when feeding them back into the network.
+\end{itemize}
+
+The IPA formulas are constructed so that if we apply the same global rigid motion $T_{\text{global}}$ to all frames $T_i$, the attention logits and local outputs remain unchanged.
+
+\section{Link to the ``rs1 Center, rs2 Lower-Right'' Picture}
+
+Return to the cartoon:
+\begin{itemize}
+  \item rs1 somewhere in the first quadrant,
+  \item rs2 down and to the right of rs1.
+\end{itemize}
+
+In global coordinates:
+\begin{itemize}
+  \item positions are $x_1, x_2$,
+  \item the vector $v_{\text{global}} = x_2 - x_1$ captures ``lower-right'' in the global frame.
+\end{itemize}
+
+In rs1's local frame:
+\[
+  v_{\text{local}} = R_1^\top (x_2 - x_1)
+\]
+captures the same ``lower-right'' relation relative to rs1's own axes.
+
+After a global rotation $G$:
+\begin{itemize}
+  \item $v_{\text{global}}'$ points in a completely different direction in the global frame,
+  \item $v_{\text{local}}' = v_{\text{local}}$; rs1 still sees rs2 in the same direction and at the same distance when measured in its own local frame.
+\end{itemize}
+
+Thus the abstract relation ``rs2 is lower-right of rs1 by this much'' is encoded by $v_{\text{local}}$ in a way that does not depend on how we orient the entire protein in space.
+
+This is exactly the invariance AF2 wants: local geometry around each residue should have a consistent representation, regardless of the arbitrary global orientation chosen when the structure is fed into the model.
+
+\section{Connecting Back to IPA}
+
+In invariant point attention, for each head $h$ and residues $i,j$:
+\begin{itemize}
+  \item query points $\tilde{q}_i^{h,p}$ live in the local frame of $i$,
+  \item key points $\tilde{k}_j^{h,p}$ live in the local frame of $j$,
+  \item frames $T_i, T_j$ convert these to global coordinates for comparison.
+\end{itemize}
+
+The squared distances in the attention logits are
+\[
+  D_{ij}^h
+    = \sum_p \bigl\|T_i \circ \tilde{q}_i^{h,p} - T_j \circ \tilde{k}_j^{h,p}\bigr\|^2.
+\]
+
+Because $T_i$ and $T_j$ are rigid transforms, these distances behave like the $v_{\text{local}}$ story above: if we apply a global transform $T_{\text{global}}$ to all frames, $D_{ij}^h$ is unchanged. Thus the attention weights do not depend on the global orientation of the protein.
+
+The point-valued outputs
+\[
+  \tilde{o}_i^{h,p}
+    = T_i^{-1} \circ
+      \left( \sum_j a_{ij}^h (T_j \circ \tilde{v}_j^{h,p}) \right)
+\]
+are likewise expressed back in the local frame of $i$, preserving the same invariance property.
+
+\section{Summary}
+
+\begin{itemize}
+  \item Global vectors (like $x_2 - x_1$) rotate when we rotate the entire protein; their coordinates depend on the arbitrary choice of global axes.
+  \item Local vectors (like $v_{\text{local}} = R_1^\top (x_2 - x_1)$) measured in residue-specific frames remain invariant under global rigid motions, provided the frames transform with the structure.
+  \item AF2 exploits this by:
+  \begin{itemize}
+    \item attaching a local rigid frame to each residue,
+    \item expressing learned geometric quantities in those local frames,
+    \item and only using global coordinates transiently to measure distances and aggregate information.
+  \end{itemize}
+\end{itemize}
+
+This makes the per-residue geometric representation insensitive to the arbitrary global orientation of the protein and is the core reason local coordinates are crucial in the AF2 structure module.
+
+\end{document}
+

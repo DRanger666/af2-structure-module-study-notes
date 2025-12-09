@@ -34,6 +34,12 @@ LaTeX sources live in the `tex/` directory, and compiled PDFs live in the `pdf/`
 - `tex/rotations_and_invariance_background.tex` / `pdf/rotations_and_invariance_background.pdf`  
   General 3D geometry background: rotations, dot-product invariance, preserved quantities, and rigid motions in SE(3).
 
+- `tex/af2_local_global_rigid_transforms_vs_change_of_basis.tex` / `pdf/af2_local_global_rigid_transforms_vs_change_of_basis.pdf`  
+  Clarifies why AF2’s local–global frame maps are per-residue rigid transforms (elements of $\mathrm{SE}(3)$), not mere linear change-of-basis operations on a single vector space.
+
+- `tex/af2_local_global_frames_visual_intuition.tex` / `pdf/af2_local_global_frames_visual_intuition.pdf`  
+  Visual, coordinate-level intuition for why AF2 attaches local frames to residues and how this yields rotationally invariant geometric features.
+
 ## Building the PDFs
 
 From the `tex/` directory, you can compile any note with `pdflatex` (or `xelatex`):
